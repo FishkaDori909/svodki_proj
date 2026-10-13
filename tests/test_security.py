@@ -1,0 +1,203 @@
+"""Проверки безопасности и приёма почты. Запуск: python -m unittest discover tests"""
+import mailbox
+import os
+import tempfile
+import textwrap
+import unittest
+import zipfile
+from email.message import EmailMessage
+from pathlib import Path
+
+from openpyxl import Workbook
+
+from svodka import mail_in, watcher
+from svodka.builder import RunState, put_row, set_cell
+from svodka.config import load_config
+from svodka.errors import ConfigError, SvodkaError
+from svodka.mail_in import sender_allowed
+from svodka.safeio import check_source_file, safe_filename
+
+CONFIG = textwrap.dedent("""
+    [paths]
+    inbox = "{root}/inbox"
+    results = "{root}/results"
+    errors = "{root}/errors"
+    state = "{root}/state"
+    log_file = "{root}/log.txt"
+    template_file = "templates/svodka_template.xlsx"
+    [mail_in]
+    enabled = true
+    mbox_path = "{root}/box"
+    allowed_senders = ["good@company.ru", "@trusted.ru"]
+""")
+
+
+def make_cfg(root: Path, extra=""):
+    path = root / "config.toml"
+    path.write_text(CONFIG.format(root=root.as_posix()) + extra, encoding="utf-8")
+    return load_config(path)
+
+
+def xlsx_bytes(root: Path) -> bytes:
+    p = root / "tmp.xlsx"
+    Workbook().save(p)
+    return p.read_bytes()
+
+
+class SafeFilename(unittest.TestCase):
+    def test_path_traversal_is_stripped(self):
+        self.assertEqual(safe_filename("../../etc/evil.xlsx"), "evil.xlsx")
+        self.assertEqual(safe_filename("..\\..\\win\\evil.xlsb"), "evil.xlsb")
+
+    def test_bad_extension_rejected(self):
+        self.assertIsNone(safe_filename("run.exe"))
+        self.assertIsNone(safe_filename("report.xlsx.exe"))
+        self.assertIsNone(safe_filename(""))
+        self.assertIsNone(safe_filename(".xlsx"))
+
+    def test_control_chars_removed(self):
+        self.assertEqual(safe_filename("a\r\nb.xlsx"), "ab.xlsx")
+
+    def test_normal_name_kept(self):
+        self.assertEqual(safe_filename("Сводка ПОНМ октябрь.xlsb"), "Сводка ПОНМ октябрь.xlsb")
+
+
+class Senders(unittest.TestCase):
+    allowed = ("good@company.ru", "@trusted.ru")
+
+    def test_rules(self):
+        self.assertTrue(sender_allowed("Good@Company.ru", self.allowed))
+        self.assertTrue(sender_allowed("anyone@trusted.ru", self.allowed))
+        self.assertFalse(sender_allowed("evil@company.ru", self.allowed))
+        self.assertFalse(sender_allowed("x@evil-trusted.ru", self.allowed))
+        self.assertFalse(sender_allowed("", self.allowed))
+
+
+class FormulaInjection(unittest.TestCase):
+    def test_text_from_source_never_becomes_formula(self):
+        ws = Workbook().active
+        run = RunState()
+        put_row(ws, 1, ['=HYPERLINK("http://evil","x")', "+1+1", "ok"], run)
+        self.assertEqual(ws["D1"].data_type, "s")
+        self.assertEqual(ws["D1"].value, '=HYPERLINK("http://evil","x")')
+        set_cell(ws, "A1", "=1+1", run)               # формулы самой программы остаются формулами
+        self.assertEqual(ws["A1"].data_type, "f")
+
+
+class SourceChecks(unittest.TestCase):
+    def test_not_a_zip_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "x.xlsx"
+            p.write_text("это не excel")
+            with self.assertRaises(SvodkaError):
+                check_source_file(p, 50, 500)
+
+    def test_big_unpacked_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "bomb.xlsx"
+            with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr("a.xml", b"0" * (3 * 1024 * 1024))
+            with self.assertRaises(SvodkaError):
+                check_source_file(p, 50, 2)
+
+
+class Config(unittest.TestCase):
+    def test_missing_file(self):
+        with self.assertRaises(ConfigError):
+            load_config(Path("нет-такого.toml"))
+
+    def test_typo_in_key_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.toml"
+            p.write_text("[watch]\ninterval_secondz = 5\n", encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(p)
+
+    def test_mail_in_requires_allowlist(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.toml"
+            p.write_text('[mail_in]\nenabled = true\nmbox_path = "x"\n', encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(p)
+
+    def test_plain_smtp_with_password_over_network_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.toml"
+            p.write_text('[mail_out]\nenabled = true\nfrom = "a@b.ru"\nto = ["c@d.ru"]\n'
+                         '[smtp]\nserver = "mail.example.com"\nsecurity = "none"\n'
+                         'login = "u"\npassword = "p"\n', encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(p)
+
+    def test_password_from_environment(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.toml"
+            p.write_text('[mail_out]\nenabled = true\nfrom = "a@b.ru"\nto = ["c@d.ru"]\n'
+                         '[smtp]\nserver = "mail.example.com"\nlogin = "u"\n', encoding="utf-8")
+            os.environ["SVODKA_SMTP_PASSWORD"] = "secret"
+            try:
+                self.assertEqual(load_config(p).mail_out.smtp.password, "secret")
+            finally:
+                del os.environ["SVODKA_SMTP_PASSWORD"]
+
+
+def add_mail(box, sender, subject, attach_name=None, data=b"", extra_headers=None):
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = sender, "svodka@company.ru", subject
+    msg["Message-ID"] = f"<{abs(hash((sender, subject, attach_name)))}@test>"
+    for k, v in (extra_headers or {}).items():
+        msg[k] = v
+    msg.set_content("текст")
+    if attach_name:
+        msg.add_attachment(data, maintype="application", subtype="octet-stream", filename=attach_name)
+    box.add(msg)
+
+
+class Mailbox(unittest.TestCase):
+    def test_only_allowed_senders_and_safe_names(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = make_cfg(root)
+            data = xlsx_bytes(root)
+            box = mailbox.mbox(str(root / "box"))
+            add_mail(box, "Good <good@company.ru>", "ПОНМ", "../../evil.xlsx", data)
+            add_mail(box, "Bad <evil@evil.ru>", "ПОНМ", "bad.xlsx", data)
+            add_mail(box, "Good <good@company.ru>", "ПОНМ", "program.exe", b"MZ")
+            add_mail(box, "Good <good@company.ru>", "Сводка 2-х час ГПН-Ямал — ПОНМ", "loop.xlsx", data)
+            add_mail(box, "Good <good@company.ru>", "ПОНМ", "loop2.xlsx", data, {"X-Svodka-Auto": "1"})
+            add_mail(box, "Anyone <a@trusted.ru>", "ПОНМ", "domain.xlsx", data)
+            box.flush()
+            box.close()
+
+            mail_in.scan_mailbox(cfg)
+
+            saved = sorted(p.name for p in cfg.paths.inbox.iterdir())
+            self.assertEqual(saved, ["domain.xlsx", "evil.xlsx"])           # evil.xlsx — уже без ../../
+            self.assertFalse((root.parent / "evil.xlsx").exists())
+            # адрес отправителя запомнен в папке состояния, а не рядом с файлом
+            self.assertTrue((cfg.paths.state / "evil.xlsx.json").exists())
+
+            before = sorted(p.name for p in cfg.paths.inbox.iterdir())
+            mail_in.scan_mailbox(cfg)                                        # повторный проход ничего не добавляет
+            self.assertEqual(before, sorted(p.name for p in cfg.paths.inbox.iterdir()))
+
+
+class Watcher(unittest.TestCase):
+    def test_non_excel_file_goes_to_errors(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = make_cfg(root)
+            cfg.paths.inbox.mkdir(parents=True)
+            (cfg.paths.inbox / "fake.xlsx").write_text("не excel")
+            watcher.scan_and_process(cfg)
+            self.assertFalse((cfg.paths.inbox / "fake.xlsx").exists())
+            self.assertTrue((cfg.paths.errors / "fake.xlsx").exists())
+
+    def test_own_results_not_taken_as_source(self):
+        self.assertFalse(watcher.is_source_candidate(Path("Сводка 2-х час ГПН-Ямал — a.xlsx")))
+        self.assertFalse(watcher.is_source_candidate(Path("~$a.xlsx")))
+        self.assertTrue(watcher.is_source_candidate(Path("Сводка ПОНМ октябрь.xlsb")))
+
+
+if __name__ == "__main__":
+    unittest.main()
