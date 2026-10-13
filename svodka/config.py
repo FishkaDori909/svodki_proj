@@ -69,6 +69,7 @@ class Smtp:
     server: str
     port: int
     security: str
+    verify_certificate: bool
     login: str
     password: str
 
@@ -110,7 +111,8 @@ _SCHEMA = {
     "mail_in": {"enabled": False, "mbox_path": "", "restrict_senders": True, "allowed_senders": []},
     "mail_out": {"enabled": False, "from": "", "to": [], "reply_to_sender": False,
                  "attach_pdf": True, "max_attachment_mb": 10},
-    "smtp": {"server": "", "port": 587, "security": "starttls", "login": "", "password": ""},
+    "smtp": {"server": "", "port": 587, "security": "starttls", "verify_certificate": True,
+             "login": "", "password": ""},
 }
 
 
@@ -212,7 +214,7 @@ def load_config(path=None) -> Config:
     sm = s["smtp"]
     password = os.environ.get(ENV_SMTP_PASSWORD) or sm["password"]
     smtp = Smtp(server=sm["server"], port=sm["port"], security=sm["security"].lower(),
-                login=sm["login"], password=password)
+                verify_certificate=sm["verify_certificate"], login=sm["login"], password=password)
     mo = s["mail_out"]
     mail_out = MailOut(enabled=mo["enabled"], sender=mo["from"], to=tuple(mo["to"]),
                        reply_to_sender=mo["reply_to_sender"], attach_pdf=mo["attach_pdf"],
@@ -231,6 +233,10 @@ def load_config(path=None) -> Config:
         if smtp.security == "none" and smtp.login and smtp.server not in _LOCAL_HOSTS:
             raise ConfigError("[smtp] security = 'none' с логином и паролем разрешён только для "
                               "локального сервера: иначе пароль пойдёт по сети открытым текстом")
+        if smtp.security != "none" and not smtp.verify_certificate:
+            warnings.append("Проверка сертификата почтового сервера отключена ([smtp] verify_certificate = "
+                            "false): соединение зашифровано, но не проверяется, что отвечает настоящий "
+                            "сервер. Используйте только во внутренней сети.")
         if sm["password"] and not os.environ.get(ENV_SMTP_PASSWORD):
             warnings.append(f"Пароль почты записан в файле настроек. Надёжнее хранить его в переменной "
                             f"окружения {ENV_SMTP_PASSWORD}.")

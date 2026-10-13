@@ -52,5 +52,7 @@ max_attachment_mb = 10      # максимальный размер всех в�
 server   = ""           # адрес почтового сервера, например "mail.company.ru"
 port     = 587
 security = "starttls"   # "starttls" (порт 587), "ssl" (порт 465) или "none" (только для локального сервера)
+verify_certificate = true   # false — не проверять сертификат сервера (например, если в server указан IP);
+                            # соединение остаётся зашифрованным, но подлинность сервера не проверяется
 login    = ""
 password = ""           # лучше оставить пустым и задать переменную SVODKA_SMTP_PASSWORD (см. README)

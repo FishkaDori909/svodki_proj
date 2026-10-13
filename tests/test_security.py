@@ -10,7 +10,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 
-from svodka import mail_in, watcher
+from svodka import mail_in, mail_out, watcher
 from svodka.builder import RunState, put_row, set_cell
 from svodka.config import load_config
 from svodka.errors import ConfigError, SvodkaError
@@ -209,6 +209,73 @@ class MailboxUnrestricted(unittest.TestCase):
                 load_config(path)
             path.write_text(base.format(root=root.as_posix()) + "\nrestrict_senders = false\n", encoding="utf-8")
             self.assertFalse(load_config(path).mail_in.restrict_senders)
+
+
+class SmtpCertificate(unittest.TestCase):
+    MAIL = """
+    [mail_out]
+    enabled = true
+    from = "a@company.ru"
+    to = ["b@company.ru"]
+    [smtp]
+    server = "10.50.40.58"
+"""
+
+    def test_verification_on_by_default_and_can_be_turned_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.assertTrue(make_cfg(root, self.MAIL).mail_out.smtp.verify_certificate)
+            cfg = make_cfg(root, self.MAIL + "    verify_certificate = false\n")
+            self.assertFalse(cfg.mail_out.smtp.verify_certificate)
+            self.assertTrue(any("сертификат" in w for w in cfg.warnings))
+
+    def test_context_does_not_verify_when_off(self):
+        import ssl
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for flag, expected in (("true", ssl.CERT_REQUIRED), ("false", ssl.CERT_NONE)):
+                smtp = make_cfg(root, self.MAIL + f"    verify_certificate = {flag}\n").mail_out.smtp
+                with mock.patch("smtplib.SMTP") as fake:
+                    mail_out._connect(smtp)
+                    ctx = fake.return_value.starttls.call_args.kwargs["context"]
+                    self.assertEqual(ctx.verify_mode, expected)
+
+
+class MailFormat(unittest.TestCase):
+    def _send(self, root: Path, src_name: str):
+        import email
+        import email.generator
+        import io
+        from unittest import mock
+        from svodka.config import MailOut, Smtp
+        att = root / "Сводка 2-х час ГПН-Ямал — Сводка ПОНМ октябрь_20261013_131928.xlsx"
+        att.write_bytes(b"data")
+        cfg = MailOut(True, "a@x.ru", ("b@x.ru",), False, True, 10, Smtp("h", 587, "none", True, "", ""))
+        sent = {}
+        with mock.patch.object(mail_out, "_connect") as conn:
+            conn.return_value.send_message.side_effect = lambda m, **kw: sent.setdefault("m", m)
+            mail_out.send_report(cfg, src_name, [att])
+        buf = io.BytesIO()
+        email.generator.BytesGenerator(buf, policy=sent["m"].policy.clone(linesep="\r\n")).flatten(sent["m"])
+        return att.name, buf.getvalue()
+
+    def test_long_russian_attachment_name_is_not_split(self):
+        import email
+        from email import policy
+        with tempfile.TemporaryDirectory() as d:
+            name, raw = self._send(Path(d), "Сводка ПОНМ октябрь.xlsb")
+        # RFC 2231 'filename*0*=' клиенты и шлюзы не склеивают: вложение приходит как «Часть 1.2»
+        self.assertNotIn(b"filename*", raw)
+        self.assertNotIn(b"name*", raw)
+        part = next(email.message_from_bytes(raw, policy=policy.default).iter_attachments())
+        self.assertEqual(part.get_filename(), name)
+        self.assertEqual(part.get_param("name"), name)
+
+    def test_newline_in_subject_is_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(ValueError):
+                self._send(Path(d), "a" + chr(10) + "Bcc: x@y.ru")
 
 
 class Watcher(unittest.TestCase):
