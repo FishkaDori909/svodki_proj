@@ -60,6 +60,7 @@ class Limits:
 class MailIn:
     enabled: bool
     mbox_path: Path | None
+    restrict_senders: bool
     allowed_senders: tuple
 
 
@@ -106,7 +107,7 @@ _SCHEMA = {
     "build": {"timezone": "Asia/Yekaterinburg", "template_sheet": "", "month": 0, "year": 0,
               "fill_sms": True, "detailed_report": False},
     "limits": {"max_file_mb": 50, "max_unpacked_mb": 500},
-    "mail_in": {"enabled": False, "mbox_path": "", "allowed_senders": []},
+    "mail_in": {"enabled": False, "mbox_path": "", "restrict_senders": True, "allowed_senders": []},
     "mail_out": {"enabled": False, "from": "", "to": [], "reply_to_sender": False,
                  "attach_pdf": True, "max_attachment_mb": 10},
     "smtp": {"server": "", "port": 587, "security": "starttls", "login": "", "password": ""},
@@ -198,11 +199,15 @@ def load_config(path=None) -> Config:
     if mi["enabled"]:
         if not mi["mbox_path"]:
             raise ConfigError("[mail_in] mbox_path: укажите путь к почтовому ящику")
-        if not senders:
+        if mi["restrict_senders"] and not senders:
             raise ConfigError("[mail_in] allowed_senders: список пуст. Перечислите адреса (или "
-                              "'@домен.ru'), от кого разрешено принимать файлы ПОНМ")
+                              "'@домен.ru'), от кого разрешено принимать файлы ПОНМ, либо "
+                              "отключите проверку: restrict_senders = false")
+        if not mi["restrict_senders"]:
+            warnings.append("Проверка отправителей отключена ([mail_in] restrict_senders = false): "
+                            "вложения принимаются от любого, кто пишет на этот ящик.")
     mail_in = MailIn(enabled=mi["enabled"], mbox_path=_resolve(mi["mbox_path"]) if mi["mbox_path"] else None,
-                     allowed_senders=senders)
+                     restrict_senders=mi["restrict_senders"], allowed_senders=senders)
 
     sm = s["smtp"]
     password = os.environ.get(ENV_SMTP_PASSWORD) or sm["password"]

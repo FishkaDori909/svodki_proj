@@ -182,6 +182,35 @@ class Mailbox(unittest.TestCase):
             self.assertEqual(before, sorted(p.name for p in cfg.paths.inbox.iterdir()))
 
 
+class MailboxUnrestricted(unittest.TestCase):
+    def test_any_sender_accepted_when_restriction_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cfg = make_cfg(root, "\nrestrict_senders = false\n")
+            self.assertFalse(cfg.mail_in.restrict_senders)
+            data = xlsx_bytes(root)
+            box = mailbox.mbox(str(root / "box"))
+            add_mail(box, "Bad <evil@evil.ru>", "ПОНМ", "any.xlsx", data)
+            add_mail(box, "Bad <evil@evil.ru>", "ПОНМ", "program.exe", b"MZ")
+            box.flush()
+            box.close()
+
+            mail_in.scan_mailbox(cfg)
+
+            self.assertEqual(sorted(p.name for p in cfg.paths.inbox.iterdir()), ["any.xlsx"])
+
+    def test_empty_list_allowed_only_without_restriction(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            base = CONFIG.replace('allowed_senders = ["good@company.ru", "@trusted.ru"]', "allowed_senders = []")
+            path = root / "config.toml"
+            path.write_text(base.format(root=root.as_posix()), encoding="utf-8")
+            with self.assertRaises(ConfigError):
+                load_config(path)
+            path.write_text(base.format(root=root.as_posix()) + "\nrestrict_senders = false\n", encoding="utf-8")
+            self.assertFalse(load_config(path).mail_in.restrict_senders)
+
+
 class Watcher(unittest.TestCase):
     def test_non_excel_file_goes_to_errors(self):
         with tempfile.TemporaryDirectory() as d:

@@ -133,7 +133,7 @@ def _extract(cfg: Config, mbox_path: Path, state: dict) -> tuple:
                 continue
 
             sender_addr = _clean_addr(parseaddr(decode_text(msg.get("From", "")))[1])
-            if not sender_allowed(sender_addr, cfg.mail_in.allowed_senders):
+            if cfg.mail_in.restrict_senders and not sender_allowed(sender_addr, cfg.mail_in.allowed_senders):
                 log.warning(f"[{mbox_path.name}] письмо #{key} от '{sender_addr or '?'}' не из списка "
                             f"разрешённых отправителей — вложения не принимаю")
                 processed.update((msg_id, key_id))
