@@ -45,7 +45,7 @@ enabled           = false   # true — отправлять каждую гот�
 from              = ""      # от чьего имени отправлять, например "svodka@company.ru"
 to                = []      # кому отправлять, например ["a@company.ru", "b@company.ru"]
 reply_to_sender   = false   # true — отправлять копию тому, кто прислал файл ПОНМ
-attach_pdf        = true    # прикладывать PDF (нужна программа LibreOffice на сервере)
+attach_pdf        = true    # прикладывать PDF: последний лист, диапазон B1:P108, одна страница (нужен LibreOffice)
 max_attachment_mb = 10      # максимальный размер всех вложений в одном письме
 
 [smtp]

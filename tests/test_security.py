@@ -278,6 +278,37 @@ class MailFormat(unittest.TestCase):
                 self._send(Path(d), "a" + chr(10) + "Bcc: x@y.ru")
 
 
+class PdfPreparation(unittest.TestCase):
+    def test_only_last_day_sheet_range_fit_to_one_page(self):
+        from openpyxl import load_workbook
+        from svodka import pdf
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            wb = Workbook()
+            wb.active.title = "data_sms"
+            for name in ("01.10", "02.10", "03.10"):
+                wb.create_sheet(name)
+            wb["03.10"]["B1"] = "сегодня"
+            wb["03.10"].page_setup.scale = 46
+            wb.create_sheet("смс")                        # служебный лист после дневных — не «последний»
+            wb["смс"].sheet_state = "hidden"
+            src, out = root / "src.xlsx", root / "out.xlsx"
+            wb.save(src)
+
+            title = pdf.prepare_single_page(src, out)
+
+            self.assertEqual(title, "03.10")
+            res = load_workbook(out)
+            self.assertEqual([w.title for w in res.worksheets if w.sheet_state == "visible"], ["03.10"])
+            ws = res["03.10"]
+            self.assertEqual(ws.print_area, "'03.10'!$B$1:$P$108")
+            self.assertTrue(ws.sheet_properties.pageSetUpPr.fitToPage)
+            self.assertEqual((ws.page_setup.fitToWidth, ws.page_setup.fitToHeight), (1, 1))
+            self.assertIsNone(ws.page_setup.scale)
+            self.assertEqual(ws["B1"].value, "сегодня")
+            self.assertEqual(load_workbook(src)["01.10"].sheet_state, "visible")   # исходник не тронут
+
+
 class Watcher(unittest.TestCase):
     def test_non_excel_file_goes_to_errors(self):
         with tempfile.TemporaryDirectory() as d:
