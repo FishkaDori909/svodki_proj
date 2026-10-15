@@ -41,6 +41,10 @@ COPY_RULES = [
     ("CK", 89, 101, 1),   # стабильный конденсат (некондиция)
     ("W", 89, 4, 2),
 ]
+# Блок «Уловленная» внизу сводки: (ячейка суточного итога в источнике, строка «текущие сутки»,
+# строка «с начала месяца»). Первая запись — УКПГ, вторая — ЦПС. «Текущие сутки» — ячейка D строки,
+# «с начала месяца» — по столбцу на каждое число месяца (1 -> D, 2 -> E, ... 31 -> AH).
+CAPTURE = [("BC101", 105, 111), ("BN101", 107, 112)]
 # строка сводки -> номера столбцов источника, суммируются построчно (строка 154+i)
 SUM_154 = {34: [21, 22], 72: [2, 3, 4, 5, 6, 10, 11, 14, 15]}
 # нефтеналив (невозврат): строка сводки -> столбцы источника (строка 89+i)
@@ -229,6 +233,10 @@ def create_daily_sheet(wb, d: date, template, run: RunState):
     for row in DATA_DST_ROWS:
         for c in range(FIRST_COL, FIRST_COL + 12):
             set_cell(ws, f"{get_column_letter(c)}{row}", None, run)
+    for _cell, cur_row, month_row in CAPTURE:       # в образце там числа какого-то старого дня
+        set_cell(ws, f"{get_column_letter(FIRST_COL)}{cur_row}", None, run)
+        for c in range(FIRST_COL, FIRST_COL + 31):
+            set_cell(ws, f"{get_column_letter(c)}{month_row}", None, run)
 
     prev = (d - timedelta(days=1)).strftime("%d.%m")
     if prev in wb.sheetnames:  # отклонение к прошлым суткам: D8 =D4-'пред'!D4, D9 =D5-'пред'!D5
@@ -283,6 +291,27 @@ def fill_day(A, B, cc, run: RunState, tag="", debug=False):
         if debug:
             log.info(f"  строка {dst_row:>3} <- сумма {cols} (89+): {raw}")
         put_row(B, dst_row, [sum(num(x) for x in r) for r in raw], run)
+
+
+def read_capture(A, run: RunState, tag="") -> tuple:
+    """Суточные итоги УКПГ и ЦПС из листа источника (см. CAPTURE); пустая ячейка -> None."""
+    out = []
+    for cell, cur_row, _month_row in CAPTURE:
+        v = A[cell].value
+        _note(run, (cell, cur_row), [v], tag)
+        out.append(None if v in (None, "") else to_num(v))
+    return tuple(out)
+
+
+def fill_capture(ws, d: date, captured: dict, run: RunState) -> None:
+    """Блок «Уловленная» внизу листа дня d. captured: дата -> итоги из read_capture().
+    «Текущие сутки» — итог самого дня d, «с начала месяца» — итоги всех дней этого месяца
+    от 1-го числа до d включительно (по столбцу на число)."""
+    for k, (_cell, cur_row, month_row) in enumerate(CAPTURE):
+        put_row(ws, cur_row, [captured[d][k]], run)
+        for e, vals in captured.items():
+            if (e.year, e.month) == (d.year, d.month) and e <= d:
+                put_row(ws, month_row, [vals[k]], run, start_col=FIRST_COL + e.day - 1)
 
 
 def log_source_report(run: RunState):
@@ -426,6 +455,7 @@ def build_summary(src, out, cfg: Config, compare=None, debug=None) -> Path:
         fallback_month = month or month_from_filename(str(src)) or today.month
 
         last = None
+        captured = {}   # дата -> суточные итоги УКПГ и ЦПС; нужны для таблицы «с начала месяца»
         for day, sheet_name in days:
             A = source_obj[sheet_name]
             d = find_sheet_date(A)
@@ -453,6 +483,8 @@ def build_summary(src, out, cfg: Config, compare=None, debug=None) -> Path:
             if is_debug:
                 log.info(f"=== ОТЛАДКА: лист источника '{sheet_name}' ({d:%d.%m.%Y}), читаем {cc + 1} интервалов ===")
             fill_day(A, dst_wb[b_list], cc, run, sheet_name, debug=is_debug)
+            captured[d] = read_capture(A, run, sheet_name)
+            fill_capture(dst_wb[b_list], d, captured, run)
             if sheet_name.strip() == "00":
                 # Лист-якорь предыдущего месяца: нужен только формулам, показывать его не надо.
                 dst_wb[b_list].sheet_state = "hidden"

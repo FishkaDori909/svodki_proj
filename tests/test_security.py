@@ -278,6 +278,35 @@ class MailFormat(unittest.TestCase):
                 self._send(Path(d), "a" + chr(10) + "Bcc: x@y.ru")
 
 
+class CaptureBlock(unittest.TestCase):
+    class Src:
+        def __init__(self, bc, bn):
+            self.cells = {"BC101": bc, "BN101": bn}
+
+        def __getitem__(self, addr):
+            return type("C", (), {"value": self.cells[addr]})()
+
+    def test_ukpg_from_bc101_cps_from_bn101_by_day(self):
+        from datetime import date
+        from svodka import builder
+        run = RunState()
+        ws = Workbook().active
+        ws["D111"], ws["D112"] = 2035, 0            # старые числа образца
+        captured = {}
+        for day, (bc, bn) in {1: (100.5, 1), 2: ("1 200,5", 2), 3: (300, "")}.items():
+            d = date(2026, 10, day)
+            captured[d] = builder.read_capture(self.Src(bc, bn), run)
+        captured[date(2026, 9, 30)] = (999, 999)    # прошлый месяц в таблицу не попадает
+        builder.fill_capture(ws, date(2026, 10, 3), captured, run)
+
+        self.assertEqual((ws["D105"].value, ws["D107"].value), (300, None))        # текущие сутки (3-е число)
+        self.assertEqual([ws.cell(111, c).value for c in (4, 5, 6, 7)], [100.5, 1200.5, 300, None])
+        self.assertEqual([ws.cell(112, c).value for c in (4, 5, 6, 7)], [1, 2, None, None])
+
+        builder.fill_capture(ws, date(2026, 10, 2), captured, run)                  # на 2-м числе 3-е не видно как «своё»
+        self.assertEqual((ws["D105"].value, ws["D107"].value), (1200.5, 2))
+
+
 class PdfPreparation(unittest.TestCase):
     def test_only_last_day_sheet_range_fit_to_one_page(self):
         from openpyxl import load_workbook
