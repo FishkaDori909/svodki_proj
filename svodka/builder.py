@@ -15,8 +15,8 @@ from openpyxl.cell.cell import MergedCell
 from openpyxl.formula.translate import Translator
 from openpyxl.utils import column_index_from_string, get_column_letter
 
-from .config import Config
-from .errors import SvodkaError
+from .config import Config, load_params
+from .errors import ConfigError, SvodkaError
 from .safeio import check_source_file, read_json, write_json
 
 log = logging.getLogger("svodka")
@@ -39,12 +39,14 @@ COPY_RULES = [
     ("BD", 89, 99, 1),    # температура
     ("CJ", 89, 100, 1),   # стабильный конденсат (кондиция)
     ("CK", 89, 101, 1),   # стабильный конденсат (некондиция)
+    ("AK", 154, 104, 1),  # ПНГ на выработку ШФЛУ
+    ("AJ", 154, 106, 1),  # ПНГ на выработку КГС
     ("W", 89, 4, 2),
 ]
 # Блок «Уловленная» внизу сводки: (ячейка суточного итога в источнике, строка «текущие сутки»,
 # строка «с начала месяца»). Первая запись — УКПГ, вторая — ЦПС. «Текущие сутки» — ячейка D строки,
 # «с начала месяца» — по столбцу на каждое число месяца (1 -> D, 2 -> E, ... 31 -> AH).
-CAPTURE = [("BC101", 105, 111), ("BN101", 107, 112)]
+CAPTURE = [("BC101", 109, 115), ("BN101", 111, 116)]
 # строка сводки -> номера столбцов источника, суммируются построчно (строка 154+i)
 SUM_154 = {34: [21, 22], 72: [2, 3, 4, 5, 6, 10, 11, 14, 15]}
 # нефтеналив (невозврат): строка сводки -> столбцы источника (строка 89+i)
@@ -255,6 +257,16 @@ def create_daily_sheet(wb, d: date, template, run: RunState):
     return ws
 
 
+def fill_params(ws, params: dict, run: RunState) -> None:
+    """БП и коэффициенты из config/params.toml (см. load_params) — в столбцы Q и R."""
+    for coord, v in params.items():
+        cell = set_cell(ws, coord, v, run)
+        if cell is not None:
+            run.written[(ws.title, coord)] = v
+            if isinstance(v, datetime) and cell.number_format == "General":
+                cell.number_format = "DD.MM.YYYY"
+
+
 def _note(run: RunState, key, vals, tag):
     empty = [v in (None, "") for v in vals]
     if all(empty):
@@ -429,6 +441,7 @@ def build_summary(src, out, cfg: Config, compare=None, debug=None) -> Path:
         check_source_file(src, cfg.limits.max_file_mb, cfg.limits.max_unpacked_mb)
 
         log.info(f"--- Обработка '{src.name}' ---")
+        params = load_params(cfg.paths.params_file)   # читается каждый раз: правки применяются без перезапуска
         source_obj = open_source(str(src))
         # '00' — последние сутки предыдущего месяца, нужны для «отклонения к прошлым
         # суткам» у первого дня месяца. Дата берётся из самого листа, не из имени.
@@ -483,6 +496,7 @@ def build_summary(src, out, cfg: Config, compare=None, debug=None) -> Path:
             if is_debug:
                 log.info(f"=== ОТЛАДКА: лист источника '{sheet_name}' ({d:%d.%m.%Y}), читаем {cc + 1} интервалов ===")
             fill_day(A, dst_wb[b_list], cc, run, sheet_name, debug=is_debug)
+            fill_params(dst_wb[b_list], params, run)
             captured[d] = read_capture(A, run, sheet_name)
             fill_capture(dst_wb[b_list], d, captured, run)
             if sheet_name.strip() == "00":
@@ -524,7 +538,7 @@ def build_summary(src, out, cfg: Config, compare=None, debug=None) -> Path:
         if compare:
             compare_with_reference(compare, run)
         return out
-    except SvodkaError as e:
+    except (SvodkaError, ConfigError) as e:
         log.error(str(e))
         raise
     except Exception:

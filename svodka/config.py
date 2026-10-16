@@ -1,4 +1,4 @@
-"""Единственное место, где читаются настройки: config/config.toml.
+"""Единственное место, где читаются настройки: config/config.toml и config/params.toml.
 
 Пароль к почте можно не хранить в файле, а передать переменной окружения
 SVODKA_SMTP_PASSWORD — она важнее значения из файла.
@@ -6,6 +6,7 @@ SVODKA_SMTP_PASSWORD — она важнее значения из файла.
 import os
 import sys
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -32,6 +33,7 @@ class Paths:
     state: Path
     log_file: Path
     template_file: Path
+    params_file: Path
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,7 @@ _SCHEMA = {
         "inbox": "data/inbox", "results": "data/results", "errors": "data/errors",
         "state": "data/state", "log_file": "logs/svodka.log",
         "template_file": "templates/svodka_template.xlsx",
+        "params_file": "config/params.toml",
     },
     "watch": {"interval_seconds": 60, "keep_days": 30},
     "build": {"timezone": "Asia/Yekaterinburg", "template_sheet": "", "month": 0, "year": 0,
@@ -246,3 +249,68 @@ def load_config(path=None) -> Config:
 
     return Config(path=cfg_path, paths=paths, watch=watch, build=build, limits=limits,
                   mail_in=mail_in, mail_out=mail_out, warnings=tuple(warnings))
+
+
+# ---------- config/params.toml: БП и коэффициенты расчёта ----------
+# Ключ в params.toml -> ячейка дневного листа сводки.
+PARAMS_BP = {
+    "neft_tn_sut": "Q5", "png_dobycha": "Q30", "png_ispolzovanie": "Q33", "png_zakachka": "Q39",
+    "png_postavka_esg": "Q68", "pg_dobycha": "Q76", "pg_kondensat_tn": "Q79", "pg_postavka_esg": "Q90",
+}
+# коэффициент -> (ячейка коэффициента, ячейка даты)
+PARAMS_KOEF = {
+    "kondensat_png_izvlechennyi": ("Q53", "R53"), "kondensat_png_ntk1": ("Q55", "R55"),
+    "kondensat_png_ntk2": ("Q58", "R58"), "kondensat_png_urg": ("Q61", "R61"),
+    "kondensat_pg_teplyi": ("Q81", "R81"), "kondensat_pg_holodnyi": ("Q84", "R84"),
+}
+PARAMS_KOEF_GRAFIK = {"kondensat_pg_teplyi": "Q123", "kondensat_pg_holodnyi": "Q127"}
+
+
+def _check_keys(where: str, section, allowed) -> None:
+    if not isinstance(section, dict):
+        raise ConfigError(f"{where}: ожидался раздел, а не значение")
+    unknown = set(section) - set(allowed)
+    if unknown:
+        raise ConfigError(f"{where}: неизвестные параметры: {', '.join(sorted(unknown))}. "
+                          f"Проверьте написание (допустимы: {', '.join(allowed)})")
+    missing = [k for k in allowed if k not in section]
+    if missing:
+        raise ConfigError(f"{where}: не заполнено: {', '.join(missing)}")
+
+
+def _number(where: str, value) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{where}: нужно число (дробная часть через точку), а записано {value!r}")
+    return value
+
+
+def load_params(path: Path) -> dict:
+    """Читает params.toml. Возвращает {ячейка дневного листа: значение}. Ошибки — ConfigError."""
+    if not path.is_file():
+        raise ConfigError(f"Файл с БП и коэффициентами '{path}' не найден (параметр params_file в настройках)")
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raise ConfigError(f"Файл '{path}' записан с ошибкой: {e}") from e
+    _check_keys(f"'{path.name}'", raw, ["bp", "koef", "koef_grafik"])
+
+    cells = {}
+    _check_keys("[bp]", raw["bp"], list(PARAMS_BP))
+    for key, cell in PARAMS_BP.items():
+        cells[cell] = _number(f"[bp] {key}", raw["bp"][key])
+
+    _check_keys("[koef]", raw["koef"], list(PARAMS_KOEF))
+    for key, (koef_cell, date_cell) in PARAMS_KOEF.items():
+        where = f"[koef.{key}]"
+        item = raw["koef"][key]
+        _check_keys(where, item, ["koef", "data"])
+        cells[koef_cell] = _number(f"{where} koef", item["koef"])
+        d = item["data"]
+        if isinstance(d, datetime) or not isinstance(d, date):
+            raise ConfigError(f"{where} data: нужна дата в виде 2026-06-01 (без кавычек), а записано {d!r}")
+        cells[date_cell] = datetime(d.year, d.month, d.day)
+
+    _check_keys("[koef_grafik]", raw["koef_grafik"], list(PARAMS_KOEF_GRAFIK))
+    for key, cell in PARAMS_KOEF_GRAFIK.items():
+        cells[cell] = _number(f"[koef_grafik] {key}", raw["koef_grafik"][key])
+    return cells

@@ -278,6 +278,33 @@ class MailFormat(unittest.TestCase):
                 self._send(Path(d), "a" + chr(10) + "Bcc: x@y.ru")
 
 
+class Params(unittest.TestCase):
+    def test_project_file_maps_to_q_and_r(self):
+        from datetime import datetime
+        from svodka.config import PROJECT_ROOT, load_params
+        cells = load_params(PROJECT_ROOT / "config" / "params.toml")
+        self.assertEqual(cells["Q5"], 16585.231)
+        self.assertEqual((cells["Q55"], cells["R55"]), (0.67, datetime(2026, 6, 1)))
+        self.assertEqual(cells["Q127"], 0.692)
+
+    def test_errors_are_reported(self):
+        from svodka.config import PROJECT_ROOT, load_params
+        good = (PROJECT_ROOT / "config" / "params.toml").read_text(encoding="utf-8")
+        bad = {
+            "опечатка в ключе": good.replace("png_zakachka ", "png_zakachkа "),
+            "число через запятую в кавычках": good.replace("koef = 0.67 ", 'koef = "0,67"'),
+            "дата строкой": good.replace("data = 2026-06-01                # R55", 'data = "01.06.2026"'),
+            "пропущен параметр": good.replace("pg_dobycha ", "# pg_dobycha "),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in bad.items():
+                with self.subTest(name):
+                    p = Path(d) / "params.toml"
+                    p.write_text(text, encoding="utf-8")
+                    with self.assertRaises(ConfigError):
+                        load_params(p)
+
+
 class CaptureBlock(unittest.TestCase):
     class Src:
         def __init__(self, bc, bn):
@@ -291,7 +318,7 @@ class CaptureBlock(unittest.TestCase):
         from svodka import builder
         run = RunState()
         ws = Workbook().active
-        ws["D111"], ws["D112"] = 2035, 0            # старые числа образца
+        ws["D115"], ws["D116"] = 2035, 0            # старые числа образца
         captured = {}
         for day, (bc, bn) in {1: (100.5, 1), 2: ("1 200,5", 2), 3: (300, "")}.items():
             d = date(2026, 10, day)
@@ -299,12 +326,12 @@ class CaptureBlock(unittest.TestCase):
         captured[date(2026, 9, 30)] = (999, 999)    # прошлый месяц в таблицу не попадает
         builder.fill_capture(ws, date(2026, 10, 3), captured, run)
 
-        self.assertEqual((ws["D105"].value, ws["D107"].value), (300, None))        # текущие сутки (3-е число)
-        self.assertEqual([ws.cell(111, c).value for c in (4, 5, 6, 7)], [100.5, 1200.5, 300, None])
-        self.assertEqual([ws.cell(112, c).value for c in (4, 5, 6, 7)], [1, 2, None, None])
+        self.assertEqual((ws["D109"].value, ws["D111"].value), (300, None))        # текущие сутки (3-е число)
+        self.assertEqual([ws.cell(115, c).value for c in (4, 5, 6, 7)], [100.5, 1200.5, 300, None])
+        self.assertEqual([ws.cell(116, c).value for c in (4, 5, 6, 7)], [1, 2, None, None])
 
         builder.fill_capture(ws, date(2026, 10, 2), captured, run)                  # на 2-м числе 3-е не видно как «своё»
-        self.assertEqual((ws["D105"].value, ws["D107"].value), (1200.5, 2))
+        self.assertEqual((ws["D109"].value, ws["D111"].value), (1200.5, 2))
 
 
 class PdfPreparation(unittest.TestCase):
@@ -330,7 +357,7 @@ class PdfPreparation(unittest.TestCase):
             res = load_workbook(out)
             self.assertEqual([w.title for w in res.worksheets if w.sheet_state == "visible"], ["03.10"])
             ws = res["03.10"]
-            self.assertEqual(ws.print_area, "'03.10'!$B$1:$P$108")
+            self.assertEqual(ws.print_area, "'03.10'!$B$1:$P$112")
             self.assertTrue(ws.sheet_properties.pageSetUpPr.fitToPage)
             self.assertEqual((ws.page_setup.fitToWidth, ws.page_setup.fitToHeight), (1, 1))
             self.assertIsNone(ws.page_setup.scale)

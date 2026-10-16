@@ -17,7 +17,7 @@ from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.pagebreak import ColBreak, RowBreak
 from openpyxl.worksheet.properties import PageSetupProperties
 
-PDF_AREA = "B1:P108"
+PDF_AREA = "B1:P112"
 _DAY_SHEET = re.compile(r"\d{2}\.\d{2}")
 _CHAR_PT = 5.6   # примерная ширина одного знака ширины столбца Excel, в пунктах
 

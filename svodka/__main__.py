@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from .builder import build_summary, result_name
-from .config import load_config
+from .config import load_config, load_params
 from .errors import ConfigError
 from .logsetup import log, setup_logging
 
@@ -49,6 +49,12 @@ def main(argv=None) -> int:
         if not cfg.paths.template_file.is_file():
             log.error(f"  Не найден файл-образец: {cfg.paths.template_file}")
             return 1
+        try:
+            load_params(cfg.paths.params_file)
+        except ConfigError as e:
+            log.error(f"  БП и коэффициенты: {e}")
+            return 1
+        log.info(f"  БП и коэффициенты: {cfg.paths.params_file}")
         return 0
 
     from . import watcher

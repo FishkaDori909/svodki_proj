@@ -12,6 +12,7 @@ errors        = "data/errors"       # сюда уходят файлы, кото
 state         = "data/state"        # служебные записи программы (не трогать)
 log_file      = "logs/svodka.log"   # журнал работы
 template_file = "templates/svodka_template.xlsx"   # образец сводки (не трогать)
+params_file   = "config/params.toml"   # БП и коэффициенты расчёта (столбцы Q и R сводки)
 
 [watch]
 interval_seconds = 60   # как часто проверять папку, секунд (не меньше 5)
@@ -45,7 +46,7 @@ enabled           = false   # true — отправлять каждую гот�
 from              = ""      # от чьего имени отправлять, например "svodka@company.ru"
 to                = []      # кому отправлять, например ["a@company.ru", "b@company.ru"]
 reply_to_sender   = false   # true — отправлять копию тому, кто прислал файл ПОНМ
-attach_pdf        = true    # прикладывать PDF: последний лист, диапазон B1:P108, одна страница (нужен LibreOffice)
+attach_pdf        = true    # прикладывать PDF: последний лист, диапазон B1:P112, одна страница (нужен LibreOffice)
 max_attachment_mb = 10      # максимальный размер всех вложений в одном письме
 
 [smtp]
