@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -261,10 +261,11 @@ def fill_params(ws, params: dict, run: RunState) -> None:
     """БП и коэффициенты из config/params.toml (см. load_params) — в столбцы Q и R."""
     for coord, v in params.items():
         cell = set_cell(ws, coord, v, run)
-        if cell is not None:
-            run.written[(ws.title, coord)] = v
-            if isinstance(v, datetime) and cell.number_format == "General":
-                cell.number_format = "DD.MM.YYYY"
+        if cell is None:
+            continue
+        if isinstance(v, datetime) and cell.number_format == "General":
+            cell.number_format = "DD.MM.YYYY"
+        run.written[(ws.title, coord)] = v
 
 
 def _note(run: RunState, key, vals, tag):
@@ -367,29 +368,37 @@ def _values_equal(old, new) -> bool:
     return old == new
 
 
+def _jsonable(v):
+    """Дата и время (из params.toml или из ячеек .xlsx) в снимок JSON идут текстом."""
+    if isinstance(v, (datetime, date, time)):
+        return v.isoformat()
+    return v
+
+
 def log_cell_changes(state_path: Path, written: dict) -> None:
     """Пишет в лог только то, что изменилось по сравнению с прошлым запуском."""
     prev = read_json(state_path)
+    snapshot = {f"{sheet}!{coord}": _jsonable(v) for (sheet, coord), v in written.items()}
     if not prev:
         log.info(f"Снимок значений для сверки изменений создан впервые ({len(written)} ячеек)")
     else:
         changed = added = 0
-        for (sheet, coord), new_v in written.items():
-            key = f"{sheet}!{coord}"
+        for key, new_v in snapshot.items():
+            sheet, coord = key.split("!", 1)
             if key not in prev:
                 added += 1
                 continue
             if not _values_equal(prev[key], new_v):
                 log.info(f"  изменение: {sheet}!{coord}: было {prev[key]!r} -> стало {new_v!r}")
                 changed += 1
-        removed = len(set(prev) - {f"{s}!{c}" for s, c in written})
+        removed = len(set(prev) - set(snapshot))
         if changed or added or removed:
             log.info(f"Изменений по сравнению с прошлым запуском: {changed} (новых ячеек: {added}, "
                      f"исчезло из вывода: {removed})")
         else:
             log.info("Изменений по сравнению с прошлым запуском нет")
     try:
-        write_json(state_path, {f"{sheet}!{coord}": v for (sheet, coord), v in written.items()})
+        write_json(state_path, snapshot)
     except OSError as e:
         log.warning(f"Не удалось сохранить снимок значений '{state_path}': {e}")
 

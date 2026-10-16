@@ -305,6 +305,19 @@ class Params(unittest.TestCase):
                         load_params(p)
 
 
+class CellChangesSnapshot(unittest.TestCase):
+    def test_dates_are_saved_and_compared(self):
+        from datetime import datetime, time
+        from svodka.builder import log_cell_changes
+        written = {("01.10", "R53"): datetime(2026, 6, 1), ("01.10", "D2"): time(4, 0), ("01.10", "D4"): 1.5}
+        with tempfile.TemporaryDirectory() as d:
+            state = Path(d) / "cells.json"
+            log_cell_changes(state, written)                 # раньше падало: datetime не пишется в JSON
+            with self.assertLogs("svodka", "INFO") as logs:
+                log_cell_changes(state, written)
+            self.assertIn("Изменений по сравнению с прошлым запуском нет", "\n".join(logs.output))
+
+
 class CaptureBlock(unittest.TestCase):
     class Src:
         def __init__(self, bc, bn):
